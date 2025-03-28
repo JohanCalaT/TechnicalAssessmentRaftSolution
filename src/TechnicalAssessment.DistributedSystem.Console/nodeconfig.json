@@ -1,0 +1,6 @@
+{
+  "nodeIds": [ 1, 2, 3, 4, 5 ],
+  "minLatencyMs": 10,
+  "maxLatencyMs": 100,
+  "messageLossRate": 0.02
+}

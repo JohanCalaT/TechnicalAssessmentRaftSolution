@@ -1,4 +1,6 @@
 ﻿using TechnicalAssessment.DistributedSystem.Core.Interfaces;
+using TechnicalAssessment.DistributedSystem.Core.Models;
+using TechnicalAssessment.DistributedSystem.Infrastructure.Configuration;
 using TechnicalAssessment.DistributedSystem.Infrastructure.Consensus;
 using TechnicalAssessment.DistributedSystem.Infrastructure.Logging;
 using TechnicalAssessment.DistributedSystem.Infrastructure.Simulation;
@@ -9,38 +11,43 @@ namespace TechnicalAssessment.DistributedSystem.Console
     {
         static async Task Main(string[] args)
         {
-            bool detailedLogs = args.Length > 0 && args[0] == "--logs";
+            bool detailedLogs = args.Contains("--logs");
 
             ShowHeader("SIMULACIÓN DE ALGORITMO RAFT");
             System.Console.WriteLine("Esta simulación demostrará el funcionamiento del algoritmo Raft");
             System.Console.WriteLine("para alcanzar consenso en un sistema distribuido, incluso");
             System.Console.WriteLine("cuando hay particiones de red.");
             System.Console.WriteLine();
-            System.Console.WriteLine("Presiona ENTER para iniciar la simulación...");
-            System.Console.ReadLine();
 
             // Crear logger (solo muestra mensajes detallados si se solicita)
             ISystemLogger logger = new ConsoleLogger(verbose: detailedLogs);
 
+            // Crear servicio de configuración
+            var configService = new NodeConfigurationService(logger);
+
+            // Solicitar el modo de configuración
+            NodeConfiguration config = await GetNodeConfigurationAsync(configService);
+
             // Crear simulador de red
-            INetworkSimulator networkSimulator = new NetworkSimulator(logger);
+            INetworkSimulator networkSimulator = new NetworkSimulator(
+                logger,
+                config.MinLatencyMs,
+                config.MaxLatencyMs,
+                config.MessageLossRate);
 
             ShowStep("CREANDO NODOS");
-            System.Console.WriteLine("Se crearán 3 nodos que formarán el clúster.");
-
-            // IDs de los nodos
-            int[] nodeIds = { 1, 2, 3 };
+            System.Console.WriteLine($"Se crearán {config.NodeIds.Count} nodos que formarán el clúster.");
 
             // Lista para almacenar los nodos
             var nodes = new List<INode>();
 
             // Crear los nodos
-            foreach (var nodeId in nodeIds)
+            foreach (var nodeId in config.NodeIds)
             {
                 // Crear el algoritmo de consenso para este nodo
                 var consensusAlgorithm = new RaftConsensus(
                     nodeId,
-                    nodeIds,
+                    config.NodeIds,
                     networkSimulator,
                     logger
                 );
@@ -57,6 +64,9 @@ namespace TechnicalAssessment.DistributedSystem.Console
                 System.Console.WriteLine($"Nodo {nodeId} creado.");
                 await Task.Delay(500); // Pausa para hacer la salida más legible
             }
+
+            System.Console.WriteLine("\nPresiona ENTER para iniciar la simulación...");
+            System.Console.ReadLine();
 
             ShowStep("CONECTANDO NODOS");
             System.Console.WriteLine("Configurando red totalmente conectada entre los nodos.");
@@ -104,62 +114,7 @@ namespace TechnicalAssessment.DistributedSystem.Console
             System.Console.ReadLine();
 
             // Escenario de prueba
-            ShowHeader("ESCENARIO DE PRUEBA");
-
-            // 1. Nodo 1 propone estado 1
-            ShowStep("PASO 1: Nodo 1 propone estado 1");
-            nodes[0].ProposeState(1);
-            await Task.Delay(2000);
-            MostrarEstadoActual(nodes);
-            System.Console.WriteLine("\nPresiona ENTER para continuar...");
-            System.Console.ReadLine();
-
-            // 2. Nodo 2 propone estado 2
-            ShowStep("PASO 2: Nodo 2 propone estado 2");
-            nodes[1].ProposeState(2);
-            await Task.Delay(2000);
-            MostrarEstadoActual(nodes);
-            System.Console.WriteLine("\nPresiona ENTER para continuar...");
-            System.Console.ReadLine();
-
-            // 3. Simular partición donde Nodo 3 no puede comunicarse con Nodo 1
-            ShowStep("PASO 3: Simulando partición de red");
-            System.Console.WriteLine("El Nodo 3 no podrá comunicarse con el Nodo 1.");
-            nodes[2].SimulatePartition(new[] { 1 });
-            await Task.Delay(2000);
-            MostrarEstadoActual(nodes);
-            System.Console.WriteLine("\nPresiona ENTER para continuar...");
-            System.Console.ReadLine();
-
-            // 4. Nodo 2 propone estado 3
-            ShowStep("PASO 4: Nodo 2 propone estado 3");
-            System.Console.WriteLine("Este valor se propagará a pesar de la partición.");
-            nodes[1].ProposeState(3);
-            await Task.Delay(2000);
-            MostrarEstadoActual(nodes);
-            System.Console.WriteLine("\nPresiona ENTER para continuar...");
-            System.Console.ReadLine();
-
-            // 5. Sanar la partición
-            ShowStep("PASO 5: Sanando la partición");
-            System.Console.WriteLine("Se restablecerá la comunicación entre todos los nodos.");
-            nodes[2].HealPartition();
-
-            // Esperar a que todos los nodos alcancen consenso
-            System.Console.WriteLine("\nEsperando a que todos los nodos alcancen consenso...");
-            await Task.Delay(3000);
-            MostrarEstadoActual(nodes);
-
-            // Verificar que todos tengan el mismo valor
-            var allSameValue = nodes.All(n => n.CurrentValue == nodes[0].CurrentValue);
-            if (allSameValue && nodes[0].CurrentValue == 3)
-            {
-                System.Console.WriteLine("\n✅ ÉXITO: Todos los nodos han alcanzado consenso con el valor 3.");
-            }
-            else
-            {
-                System.Console.WriteLine("\n❌ ERROR: No se ha alcanzado consenso correctamente.");
-            }
+            await RunTestScenario(nodes);
 
             // Opcionalmente, mostrar logs detallados
             if (detailedLogs)
@@ -194,6 +149,120 @@ namespace TechnicalAssessment.DistributedSystem.Console
             System.Console.WriteLine("           SIMULACIÓN COMPLETADA                  ");
             System.Console.WriteLine("==================================================");
             System.Console.ResetColor();
+        }
+
+        /// <summary>
+        /// Obtiene la configuración de nodos desde JSON o consola según elección del usuario
+        /// </summary>
+        private static async Task<NodeConfiguration> GetNodeConfigurationAsync(INodeConfigurationService configService)
+        {
+            System.Console.WriteLine("¿Cómo deseas configurar los nodos?");
+            System.Console.WriteLine("1. Cargar desde archivo JSON");
+            System.Console.WriteLine("2. Configurar manualmente");
+            System.Console.WriteLine("3. Usar configuración predeterminada (3 nodos)");
+
+            int option = 0;
+            while (option < 1 || option > 3)
+            {
+                System.Console.Write("Selecciona una opción (1-3): ");
+                if (!int.TryParse(System.Console.ReadLine(), out option) || option < 1 || option > 3)
+                {
+                    System.Console.WriteLine("Opción inválida. Por favor, selecciona 1, 2 o 3.");
+                }
+            }
+
+            if (option == 1)
+            {
+                string defaultPath = "nodeconfig.json";
+                System.Console.Write($"Ingresa la ruta del archivo JSON (Enter para usar '{defaultPath}'): ");
+                string path = System.Console.ReadLine() ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    path = defaultPath;
+                }
+
+                return await configService.LoadFromJsonAsync(path);
+            }
+            else if (option == 2)
+            {
+                return configService.CollectFromConsole();
+            }
+            else
+            {
+                // Opción 3: Configuración predeterminada
+                return new NodeConfiguration
+                {
+                    NodeIds = new List<int> { 1, 2, 3 },
+                    MinLatencyMs = 5,
+                    MaxLatencyMs = 50,
+                    MessageLossRate = 0.05
+                };
+            }
+        }
+
+        /// <summary>
+        /// Ejecuta el escenario de prueba con los nodos dados
+        /// </summary>
+        private static async Task RunTestScenario(List<INode> nodes)
+        {
+            ShowHeader("ESCENARIO DE PRUEBA");
+
+            // 1. Nodo 1 propone estado 1
+            ShowStep("PASO 1: Nodo 1 propone estado 1");
+            nodes[0].ProposeState(1);
+            await Task.Delay(2000);
+            MostrarEstadoActual(nodes);
+            System.Console.WriteLine("\nPresiona ENTER para continuar...");
+            System.Console.ReadLine();
+
+            // 2. Nodo 2 propone estado 2
+            ShowStep("PASO 2: Nodo 2 propone estado 2");
+            nodes[1].ProposeState(2);
+            await Task.Delay(2000);
+            MostrarEstadoActual(nodes);
+            System.Console.WriteLine("\nPresiona ENTER para continuar...");
+            System.Console.ReadLine();
+
+            // 3. Simular partición
+            ShowStep("PASO 3: Simulando partición de red");
+            int lastNodeIndex = nodes.Count - 1;
+            System.Console.WriteLine($"El Nodo {nodes[lastNodeIndex].Id} no podrá comunicarse con el Nodo {nodes[0].Id}.");
+            nodes[lastNodeIndex].SimulatePartition(new[] { nodes[0].Id });
+            await Task.Delay(2000);
+            MostrarEstadoActual(nodes);
+            System.Console.WriteLine("\nPresiona ENTER para continuar...");
+            System.Console.ReadLine();
+
+            // 4. Nodo 2 propone estado 3
+            ShowStep("PASO 4: Nodo 2 propone estado 3");
+            System.Console.WriteLine("Este valor se propagará a pesar de la partición.");
+            nodes[1].ProposeState(3);
+            await Task.Delay(2000);
+            MostrarEstadoActual(nodes);
+            System.Console.WriteLine("\nPresiona ENTER para continuar...");
+            System.Console.ReadLine();
+
+            // 5. Sanar la partición
+            ShowStep("PASO 5: Sanando la partición");
+            System.Console.WriteLine("Se restablecerá la comunicación entre todos los nodos.");
+            nodes[lastNodeIndex].HealPartition();
+
+            // Esperar a que todos los nodos alcancen consenso
+            System.Console.WriteLine("\nEsperando a que todos los nodos alcancen consenso...");
+            await Task.Delay(3000);
+            MostrarEstadoActual(nodes);
+
+            // Verificar que todos tengan el mismo valor
+            var allSameValue = nodes.All(n => n.CurrentValue == nodes[0].CurrentValue);
+            if (allSameValue && nodes[0].CurrentValue == 3)
+            {
+                System.Console.WriteLine("\n✅ ÉXITO: Todos los nodos han alcanzado consenso con el valor 3.");
+            }
+            else
+            {
+                System.Console.WriteLine("\n❌ ERROR: No se ha alcanzado consenso correctamente.");
+            }
         }
 
         static void ShowHeader(string title)
